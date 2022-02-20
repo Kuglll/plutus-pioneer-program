@@ -32,18 +32,31 @@ import           Wallet.Emulator.Wallet
 -- Minting policy for an NFT, where the minting transaction must consume the given UTxO as input
 -- and where the TokenName will be the empty ByteString.
 mkPolicy :: TxOutRef -> () -> ScriptContext -> Bool
-mkPolicy oref () ctx = True -- FIX ME!
+mkPolicy oref () ctx = traceIfFalse "UTxO not consumed" $ any (\i -> txInInfoOutRef i == oref) $ txInfoInputs (scriptContextTxInfo ctx)
 
 policy :: TxOutRef -> Scripts.MintingPolicy
-policy oref = undefined -- IMPLEMENT ME!
+policy oref = mkMintingPolicyScript $
+    $$(PlutusTx.compile [|| Scripts.wrapMintingPolicy . mkPolicy ||])
+    `PlutusTx.applyCode`
+    PlutusTx.liftCode oref
 
 curSymbol :: TxOutRef -> CurrencySymbol
-curSymbol = undefined -- IMPLEMENT ME!
+curSymbol = scriptCurrencySymbol . policy
 
 type NFTSchema = Endpoint "mint" Address
 
 mint :: Address -> Contract w NFTSchema Text ()
-mint _ = undefined -- IMPLEMENT ME!
+mint address = do
+	utxos <- utxosAt address
+	case Map.keys utxos of
+	    []		-> Contract.logError @String "no utxo found"
+	    oref : _ -> do
+		let val     = Value.singleton (curSymbol oref) "" 1
+		    lookups = Constraints.mintingPolicy (policy oref) <> Constraints.unspentOutputs utxos
+		    tx      = Constraints.mustMintValue val <> Constraints.mustSpendPubKeyOutput oref
+		ledgerTx <- submitTxConstraintsWith @Void lookups tx
+		void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
+		Contract.logInfo @String $ printf "forged %s" (show val)
 
 endpoints :: Contract () NFTSchema Text ()
 endpoints = mint' >> endpoints
